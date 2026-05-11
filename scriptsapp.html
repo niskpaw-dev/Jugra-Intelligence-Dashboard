@@ -1,0 +1,294 @@
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   APP.JS  ·  App shell, routing, state management
+   ────────────────────────────────────────────────────────────────────
+   - Single source of truth untuk state (App.state)
+   - Hash-based routing untuk page switches (#dashboard, etc.)
+   - Event delegation at document.body untuk semua action clicks
+   - Page rendering coordinated melalui App.navigate()
+   ════════════════════════════════════════════════════════════════════ */
+
+(function (window) {
+  'use strict';
+
+  /* ──────────────────────────────────────────────────────────────
+     STATE
+     ────────────────────────────────────────────────────────────── */
+  var state = {
+    currentPage: 'dashboard',
+    dokumen:     null,    // null = belum load, [] = loaded empty, [...] = data
+    users:       null,
+    audit:       null,
+    loading:     false
+  };
+
+  // Nav config — sumber tunggal untuk sidebar links
+  var NAV_ITEMS = [
+    { id: 'dashboard',  label: 'Dashboard',           icon: '◇', adminOnly: false },
+    { id: 'repositori', label: 'Repositori Evidens',  icon: '▤', adminOnly: false },
+    { id: 'pengguna',   label: 'Pengurusan Pengguna', icon: '◉', adminOnly: true  },
+    { id: 'audit',      label: 'Audit Log',           icon: '▥', adminOnly: true  },
+    { id: 'profil',     label: 'Profil Pengetua',     icon: '◐', adminOnly: false }
+  ];
+
+
+  /* ──────────────────────────────────────────────────────────────
+     BOOT  ·  Single entry point called dari Index.html DOMContentLoaded
+     ────────────────────────────────────────────────────────────── */
+  function boot() {
+    Auth.init().then(function (authenticated) {
+      hideSplash();
+      if (authenticated) {
+        renderShell();
+        var initial = parseHash() || 'dashboard';
+        navigate(initial, { replace: true });
+      } else {
+        showLogin();
+      }
+    }).catch(function (err) {
+      console.error('Boot failed:', err);
+      hideSplash();
+      showLogin();
+    });
+
+    // Listen untuk hash changes
+    window.addEventListener('hashchange', function () {
+      if (!Auth.isAuthenticated()) return;
+      var page = parseHash();
+      if (page && page !== state.currentPage) {
+        navigate(page, { silent: true });
+      }
+    });
+
+    // Listen untuk auth state changes (e.g., session expired mid-app)
+    Auth.onChange(function () {
+      if (!Auth.isAuthenticated()) {
+        renderEmpty();
+        showLogin();
+      }
+    });
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     SPLASH
+     ────────────────────────────────────────────────────────────── */
+  function hideSplash() {
+    var splash = document.getElementById('splash');
+    if (!splash) return;
+    splash.classList.add('hide');
+    setTimeout(function () { splash.remove(); }, 250);
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     LOGIN
+     ────────────────────────────────────────────────────────────── */
+  function showLogin() {
+    var app = document.getElementById('app');
+    if (app) {
+      app.hidden = true;
+      app.innerHTML = '';
+    }
+    ModalLogin.open(function onSuccess(user) {
+      renderShell();
+      navigate('dashboard', { replace: true });
+    });
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     APP SHELL  ·  Sidebar + main content
+     ────────────────────────────────────────────────────────────── */
+  function renderShell() {
+    var app = document.getElementById('app');
+    app.hidden = false;
+    var user = Auth.getUser() || {};
+
+    // Filter nav items by role
+    var visibleItems = NAV_ITEMS.filter(function (item) {
+      return !item.adminOnly || Auth.isAdmin();
+    });
+
+    var navHtml = visibleItems.map(function (item) {
+      return [
+        '<button type="button" class="nav-link" data-action="navigate" data-page="', escapeAttr(item.id), '">',
+          '<span class="icon">', item.icon, '</span>',
+          '<span>', escapeText(item.label), '</span>',
+        '</button>'
+      ].join('');
+    }).join('');
+
+    app.innerHTML = [
+      '<aside class="nav">',
+        '<div class="nav-brand">',
+          '<div class="nav-brand-mark">JID</div>',
+          '<div class="nav-brand-sub">SMK Jugra</div>',
+        '</div>',
+        '<div class="nav-section-label">Menu</div>',
+        navHtml,
+        '<div class="nav-foot">',
+          '<div class="nav-user">',
+            '<div class="nav-user-name">', escapeText(user.fullname || user.username || ''), '</div>',
+            '<div class="nav-user-role">', escapeText(user.role || ''), '</div>',
+          '</div>',
+          '<button type="button" class="nav-link" data-action="logout">',
+            '<span class="icon">↗</span>',
+            '<span>Log keluar</span>',
+          '</button>',
+        '</div>',
+      '</aside>',
+      '<main class="main" id="main"></main>'
+    ].join('');
+
+    updateActiveNav();
+  }
+
+  function renderEmpty() {
+    var app = document.getElementById('app');
+    if (app) { app.hidden = true; app.innerHTML = ''; }
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     NAVIGATION  ·  Hash routing + page render
+     ────────────────────────────────────────────────────────────── */
+  function navigate(pageId, opts) {
+    opts = opts || {};
+    var allowed = NAV_ITEMS.some(function (i) {
+      return i.id === pageId && (!i.adminOnly || Auth.isAdmin());
+    });
+    if (!allowed) pageId = 'dashboard';
+
+    state.currentPage = pageId;
+    if (!opts.silent) {
+      var hashValue = '#' + pageId;
+      if (opts.replace) {
+        history.replaceState(null, '', hashValue);
+      } else if (window.location.hash !== hashValue) {
+        window.location.hash = hashValue;
+      }
+    }
+    updateActiveNav();
+    renderPage(pageId);
+  }
+
+  function updateActiveNav() {
+    document.querySelectorAll('.nav-link[data-page]').forEach(function (el) {
+      el.classList.toggle('active', el.dataset.page === state.currentPage);
+    });
+  }
+
+  function parseHash() {
+    var h = (window.location.hash || '').replace(/^#/, '');
+    return NAV_ITEMS.some(function (i) { return i.id === h; }) ? h : null;
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     PAGE RENDER  ·  Delegates to page modules
+     ────────────────────────────────────────────────────────────── */
+  function renderPage(pageId) {
+    var main = document.getElementById('main');
+    if (!main) return;
+
+    switch (pageId) {
+      case 'dashboard':
+        Dashboard.render(main);
+        break;
+
+      case 'repositori':
+      case 'pengguna':
+      case 'audit':
+      case 'profil':
+        // Phase 2B akan implement
+        main.innerHTML = renderPlaceholder(pageId);
+        break;
+
+      default:
+        main.innerHTML = renderPlaceholder('404');
+    }
+  }
+
+  function renderPlaceholder(pageId) {
+    var labels = {
+      repositori: 'Repositori Evidens',
+      pengguna:   'Pengurusan Pengguna',
+      audit:      'Audit Log',
+      profil:     'Profil Pengetua',
+      '404':      'Halaman tidak dijumpai'
+    };
+    var label = labels[pageId] || 'Halaman';
+    return [
+      '<div class="empty">',
+        '<div class="empty-title">', escapeText(label), '</div>',
+        '<div class="empty-desc">Halaman ini akan disiapkan dalam Phase 2B. Sila tunggu kemaskini.</div>',
+      '</div>'
+    ].join('');
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     EVENT DELEGATION  ·  Satu listener untuk semua action clicks
+     ────────────────────────────────────────────────────────────── */
+  document.addEventListener('click', function (e) {
+    var trigger = e.target.closest('[data-action]');
+    if (!trigger) return;
+    var action = trigger.dataset.action;
+    var page   = trigger.dataset.page;
+
+    switch (action) {
+      case 'navigate':
+        if (page) navigate(page);
+        break;
+
+      case 'logout':
+        handleLogout();
+        break;
+
+      case 'filter-kategori':
+        // Phase 2B akan handle
+        navigate('repositori');
+        Api.toast('Filter kategori akan tersedia dalam Phase 2B', { type: 'info' });
+        break;
+    }
+  });
+
+  function handleLogout() {
+    Auth.logout().then(function () {
+      Api.toast('Log keluar berjaya', { type: 'success' });
+      // Auth.onChange listener will trigger showLogin()
+    });
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     ESCAPE HELPERS  ·  Defense against XSS in dynamic content
+     ────────────────────────────────────────────────────────────── */
+  var ESCAPE_MAP_TEXT = {
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  };
+
+  function escapeText(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, function (c) { return ESCAPE_MAP_TEXT[c]; });
+  }
+
+  function escapeAttr(s) {
+    return escapeText(s);
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     Public surface
+     ────────────────────────────────────────────────────────────── */
+  window.App = {
+    boot:        boot,
+    state:       state,
+    navigate:    navigate,
+    escapeText:  escapeText,
+    escapeAttr:  escapeAttr
+  };
+
+})(window);
+</script>
