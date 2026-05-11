@@ -1,0 +1,242 @@
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   DASHBOARD.JS  ·  Dashboard page module
+   ────────────────────────────────────────────────────────────────────
+   Renders: header (selamat kembali) + Library Overview (table-of-
+   contents ala jurnal, ganti 6 stat cards yang sama-saiz).
+
+   Data flow:
+     1. render(main) → tunjuk loading state
+     2. fetch dokumen via Api.run('getDokumen', token)
+     3. group by kategori → render full content
+     4. on error → tunjuk error state dengan retry button
+   ════════════════════════════════════════════════════════════════════ */
+
+(function (window) {
+  'use strict';
+
+  // 6 standard kepimpinan with descriptive subtitles
+  var STANDARDS = [
+    { id: '1.1', name: 'Hala Tuju Sekolah',                  sub: 'Visi, misi, pelan strategik' },
+    { id: '1.2', name: 'Pengurusan Organisasi',              sub: 'Carta organisasi, pengurusan staf' },
+    { id: '1.3', name: 'Kepimpinan Instruksional',           sub: 'PdP, akademik, prestasi murid' },
+    { id: '1.4', name: 'Pengurusan Perubahan dan Inovasi',   sub: 'Program inovasi sekolah' },
+    { id: '1.5', name: 'Jaringan dan Jalinan',               sub: 'PIBG, komuniti, kerjasama' },
+    { id: '1.6', name: 'Kepimpinan Berintegriti',            sub: 'Audit, disiplin, etika' }
+  ];
+
+  var BULAN_MS = ['Januari','Februari','Mac','April','Mei','Jun',
+                  'Julai','Ogos','September','Oktober','November','Disember'];
+  var HARI_MS  = ['Ahad','Isnin','Selasa','Rabu','Khamis','Jumaat','Sabtu'];
+
+
+  /* ──────────────────────────────────────────────────────────────
+     RENDER  ·  Entry point dari App.renderPage
+     ────────────────────────────────────────────────────────────── */
+  function render(container) {
+    container.innerHTML = renderLoading();
+    fetchAndRender(container);
+  }
+
+  function fetchAndRender(container) {
+    Api.run('getDokumen', Auth.getToken())
+      .then(function (dokumen) {
+        App.state.dokumen = dokumen || [];
+        container.innerHTML = renderContent(App.state.dokumen);
+      })
+      .catch(function (err) {
+        if (err.code === 'SESSION_EXPIRED') {
+          Auth.handleExpired();
+          return;
+        }
+        console.error('Dashboard fetch failed:', err);
+        container.innerHTML = renderError(err);
+      });
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     LOADING STATE
+     ────────────────────────────────────────────────────────────── */
+  function renderLoading() {
+    return [
+      '<div class="dash-header">',
+        '<div class="eyebrow">',
+          '<span>SMK Jugra · Banting Selangor</span>',
+          '<span>', formatToday(), '</span>',
+        '</div>',
+        '<h1>Memuatkan&hellip;</h1>',
+      '</div>',
+      '<div style="padding: var(--space-7) 0; display: flex; align-items: center; gap: var(--space-3); color: var(--ink-quiet); font-family: var(--font-mono); font-size: var(--text-xs);">',
+        '<span class="loading-bar"></span>',
+        '<span>Mengambil data evidens&hellip;</span>',
+      '</div>'
+    ].join('');
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     ERROR STATE
+     ────────────────────────────────────────────────────────────── */
+  function renderError(err) {
+    return [
+      '<div class="dash-header">',
+        '<div class="eyebrow">',
+          '<span>SMK Jugra</span>',
+          '<span>', formatToday(), '</span>',
+        '</div>',
+        '<h1>Tidak dapat memuatkan data</h1>',
+      '</div>',
+      '<div class="empty">',
+        '<div class="empty-title">Ralat semasa mengambil evidens</div>',
+        '<div class="empty-desc">', App.escapeText(err.message || 'Tidak diketahui'),
+          '<br><small style="font-family: var(--font-mono); color: var(--ink-quiet);">Kod: ', App.escapeText(err.code || 'UNKNOWN'), '</small>',
+        '</div>',
+        '<button type="button" class="btn btn-secondary" data-action="navigate" data-page="dashboard">Cuba semula</button>',
+      '</div>'
+    ].join('');
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     MAIN CONTENT  ·  Header + Library Overview
+     ────────────────────────────────────────────────────────────── */
+  function renderContent(dokumen) {
+    var user = Auth.getUser() || {};
+    var counts = groupByKategori(dokumen);
+    var total = dokumen.length;
+    var latest = findLatest(dokumen);
+
+    return renderHeader(user) + renderLibrary(counts, total, latest);
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     HEADER  ·  Selamat kembali, [name]
+     ────────────────────────────────────────────────────────────── */
+  function renderHeader(user) {
+    var name = user.fullname || user.username || 'Pengguna';
+    // Untuk "Selamat kembali, [first name]" — extract first name
+    var firstName = extractFirstName(name);
+
+    return [
+      '<div class="dash-header">',
+        '<div class="eyebrow">',
+          '<span>SMK Jugra · Banting Selangor</span>',
+          '<span>', formatToday(), '</span>',
+        '</div>',
+        '<h1>Selamat kembali, <em>', App.escapeText(firstName), '</em></h1>',
+        '<p class="principal">', App.escapeText(roleTitle(user.role)), '</p>',
+        '<p class="school">Sesi 2026 · Standard kepimpinan 1.1 — 1.6</p>',
+      '</div>'
+    ].join('');
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     LIBRARY OVERVIEW  ·  Table of contents ala jurnal
+     ────────────────────────────────────────────────────────────── */
+  function renderLibrary(counts, total, latest) {
+    var rows = STANDARDS.map(function (s) {
+      var count = counts[s.id] || 0;
+      var countClass = count === 0 ? 'zero' : '';
+      return [
+        '<button type="button" class="lib-row" data-action="filter-kategori" data-kategori="', App.escapeAttr(s.id), '">',
+          '<span class="lib-num">', s.id, '</span>',
+          '<span class="lib-name">', App.escapeText(s.name),
+            '<span class="lib-sub">', App.escapeText(s.sub), '</span>',
+          '</span>',
+          '<span class="lib-count ', countClass, '">', count, '</span>',
+        '</button>'
+      ].join('');
+    }).join('');
+
+    var footText = latest
+      ? 'Kemaskini terakhir · ' + formatDateLong(latest.created_at || latest.tarikh)
+      : 'Tiada evidens lagi';
+
+    return [
+      '<div class="lib">',
+        '<div class="lib-head">',
+          '<span class="lib-label">Ringkasan Repositori</span>',
+          '<span class="lib-total">Jumlah <strong>', total, '</strong> evidens</span>',
+        '</div>',
+        rows,
+        '<div class="lib-foot">', App.escapeText(footText), '</div>',
+      '</div>'
+    ].join('');
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     DATA HELPERS
+     ────────────────────────────────────────────────────────────── */
+  function groupByKategori(dokumen) {
+    var counts = {};
+    dokumen.forEach(function (d) {
+      // kategori field stored as e.g. "1.1 Hala Tuju Sekolah"
+      var k = String(d.kategori || '');
+      var match = k.match(/^(\d\.\d)/);
+      var id = match ? match[1] : null;
+      if (id) counts[id] = (counts[id] || 0) + 1;
+    });
+    return counts;
+  }
+
+  function findLatest(dokumen) {
+    if (!dokumen || !dokumen.length) return null;
+    return dokumen.reduce(function (latest, d) {
+      var dDate = parseDate(d.created_at || d.tarikh);
+      var lDate = parseDate(latest && (latest.created_at || latest.tarikh));
+      if (!latest) return d;
+      return (dDate && lDate && dDate > lDate) ? d : latest;
+    }, null);
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     STRING / DATE HELPERS
+     ────────────────────────────────────────────────────────────── */
+  function extractFirstName(fullname) {
+    // For Malay names: "Mohd Naudi Haqqi bin Ahmad" → "Tuan Naudi"
+    // Simple: skip titles (Tuan, Cikgu, En, Pn, Dr) and take first real name
+    var parts = String(fullname).trim().split(/\s+/);
+    var SKIP = /^(tuan|cikgu|en|pn|dr|ustaz|hj|hjh|mohd|mohamed|muhammad|muhamad)$/i;
+    for (var i = 0; i < parts.length; i++) {
+      if (!SKIP.test(parts[i])) return parts[i];
+    }
+    return parts[0] || fullname;
+  }
+
+  function roleTitle(role) {
+    if (role === 'Admin') return 'Pengetua, SMK Jugra';
+    if (role === 'Guru')  return 'Guru, SMK Jugra';
+    return '';
+  }
+
+  function formatToday() {
+    var d = new Date();
+    return HARI_MS[d.getDay()] + ', ' + d.getDate() + ' ' + BULAN_MS[d.getMonth()] + ' ' + d.getFullYear();
+  }
+
+  function parseDate(v) {
+    if (!v) return null;
+    if (v instanceof Date) return v;
+    var d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function formatDateLong(v) {
+    var d = parseDate(v);
+    if (!d) return '-';
+    return d.getDate() + ' ' + BULAN_MS[d.getMonth()] + ' ' + d.getFullYear();
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     Public surface
+     ────────────────────────────────────────────────────────────── */
+  window.Dashboard = { render: render };
+
+})(window);
+</script>
