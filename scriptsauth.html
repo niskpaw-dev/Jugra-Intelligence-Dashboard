@@ -1,0 +1,133 @@
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   API.JS  ·  Bridge between frontend and Apps Script backend
+   ────────────────────────────────────────────────────────────────────
+   Wraps google.script.run dalam Promise interface, handles the new
+   response shape { ok, data, error, code }, and exposes toast helpers
+   untuk user-facing error messages.
+   ════════════════════════════════════════════════════════════════════ */
+
+(function (window) {
+  'use strict';
+
+
+  // ─────────────────────────────────────────────────────────────────
+  //  ApiError  ·  Typed error untuk easy branching di caller
+  // ─────────────────────────────────────────────────────────────────
+  function ApiError(message, code) {
+    this.name    = 'ApiError';
+    this.message = message || 'Ralat sistem';
+    this.code    = code    || 'UNKNOWN';
+  }
+  ApiError.prototype = Object.create(Error.prototype);
+
+
+  // ─────────────────────────────────────────────────────────────────
+  //  gasRun(fnName, ...args)  ·  call Apps Script function as Promise
+  //
+  //  Resolves with `result.data` (or `result` directly if no wrapper).
+  //  Rejects with ApiError kalau `result.ok === false` or network fail.
+  // ─────────────────────────────────────────────────────────────────
+  function gasRun(fnName) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      // Defensive: ensure google.script.run is available
+      if (typeof google === 'undefined' || !google.script || !google.script.run) {
+        return reject(new ApiError(
+          'Apps Script connection tidak tersedia. Sila refresh.',
+          'NO_CONNECTION'
+        ));
+      }
+      var runner = google.script.run
+        .withSuccessHandler(function (result) {
+          if (result && result.ok === false) {
+            return reject(new ApiError(result.error, result.code));
+          }
+          // Backend always returns { ok, data }; resolve with data
+          if (result && typeof result === 'object' && 'ok' in result) {
+            return resolve(result.data);
+          }
+          // Fallback untuk endpoint yang tak guna wrapper
+          resolve(result);
+        })
+        .withFailureHandler(function (err) {
+          var msg = (err && err.message) ? err.message : 'Sambungan terputus';
+          reject(new ApiError(msg, 'NETWORK'));
+        });
+
+      try {
+        runner[fnName].apply(runner, args);
+      } catch (e) {
+        reject(new ApiError('Endpoint tidak wujud: ' + fnName, 'NO_FUNCTION'));
+      }
+    });
+  }
+
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Toast  ·  Non-blocking notification
+  // ─────────────────────────────────────────────────────────────────
+  var toastCounter = 0;
+
+  function toast(message, options) {
+    options = options || {};
+    var type     = options.type || 'info';      // info | success | error
+    var duration = options.duration || 4000;
+    var root     = document.getElementById('toast-root');
+    if (!root) return;
+
+    var el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.id = 't_' + (++toastCounter);
+    el.textContent = String(message);
+    root.appendChild(el);
+
+    var timer = setTimeout(function () { dismiss(el); }, duration);
+
+    // Click to dismiss
+    el.addEventListener('click', function () {
+      clearTimeout(timer);
+      dismiss(el);
+    });
+  }
+
+  function dismiss(el) {
+    if (!el || el._removing) return;
+    el._removing = true;
+    el.classList.add('removing');
+    setTimeout(function () {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, 160);
+  }
+
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Helpers untuk common patterns
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Wrap async function dengan automatic toast on error.
+   * Returns Promise that resolves with the value, or rejects after
+   * showing toast.
+   */
+  function withErrorToast(promise) {
+    return promise.catch(function (err) {
+      console.error('[API error]', err);
+      toast(err.message || 'Ralat tidak diketahui', { type: 'error' });
+      throw err;
+    });
+  }
+
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Public surface
+  // ─────────────────────────────────────────────────────────────────
+  window.Api = {
+    run:            gasRun,
+    Error:          ApiError,
+    toast:          toast,
+    withErrorToast: withErrorToast
+  };
+
+})(window);
+</script>
