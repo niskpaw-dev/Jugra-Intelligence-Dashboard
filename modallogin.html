@@ -1,0 +1,175 @@
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   MODAL-LOGIN.JS  ·  Login modal
+   ────────────────────────────────────────────────────────────────────
+   Modal yang muncul bila user tak authenticated. Mandatory — tak boleh
+   close (no backdrop click, no Esc). Login success → callback.
+   ════════════════════════════════════════════════════════════════════ */
+
+(function (window) {
+  'use strict';
+
+  var currentEl = null;
+
+  /* ──────────────────────────────────────────────────────────────
+     open(onSuccess)
+     ────────────────────────────────────────────────────────────── */
+  function open(onSuccess) {
+    if (currentEl) return; // already open
+
+    var root = document.getElementById('modal-root');
+    if (!root) return;
+
+    var html = [
+      '<div class="modal-backdrop" data-login-backdrop>',
+        '<div class="modal" role="dialog" aria-labelledby="login-title">',
+          '<div class="modal-head">',
+            '<div class="login-eyebrow">JID · SMK Jugra</div>',
+            '<h2 class="modal-title" id="login-title">Log masuk</h2>',
+            '<p class="modal-subtitle">Repositori Evidens Kepimpinan</p>',
+          '</div>',
+          '<div class="modal-body">',
+            '<form id="login-form" novalidate>',
+              '<label class="field">',
+                '<span class="field-label">Username</span>',
+                '<input type="text" class="input" id="login-username" autocomplete="username" autocapitalize="none" autocorrect="off" required>',
+              '</label>',
+              '<label class="field">',
+                '<span class="field-label">Password</span>',
+                '<input type="password" class="input" id="login-password" autocomplete="current-password" required>',
+              '</label>',
+              '<div class="field-error" id="login-error" style="display:none"></div>',
+            '</form>',
+          '</div>',
+          '<div class="modal-foot">',
+            '<button type="submit" form="login-form" class="btn btn-primary btn-block" id="login-submit">',
+              'Log masuk',
+            '</button>',
+          '</div>',
+        '</div>',
+      '</div>'
+    ].join('');
+
+    root.innerHTML = html;
+    currentEl = root.querySelector('[data-login-backdrop]');
+
+    // Auto-focus username
+    setTimeout(function () {
+      var el = document.getElementById('login-username');
+      if (el) el.focus();
+    }, 50);
+
+    // Form submit handler
+    var form = document.getElementById('login-form');
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      handleSubmit(onSuccess);
+    });
+
+    // Block backdrop click (login is mandatory)
+    currentEl.addEventListener('click', function (e) {
+      if (e.target === currentEl) {
+        // shake the modal slightly to indicate "you can't close this"
+        var modal = currentEl.querySelector('.modal');
+        if (modal) {
+          modal.style.animation = 'none';
+          modal.offsetHeight; // reflow
+          modal.style.animation = 'modal-in 240ms cubic-bezier(0.16, 1, 0.3, 1)';
+        }
+      }
+    });
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     SUBMIT HANDLER
+     ────────────────────────────────────────────────────────────── */
+  function handleSubmit(onSuccess) {
+    var usernameEl = document.getElementById('login-username');
+    var passwordEl = document.getElementById('login-password');
+    var submitBtn  = document.getElementById('login-submit');
+    var errorEl    = document.getElementById('login-error');
+
+    var username = (usernameEl.value || '').trim();
+    var password = passwordEl.value || '';
+
+    clearError();
+
+    if (!username || !password) {
+      showError('Username dan password diperlukan');
+      return;
+    }
+
+    // Loading state
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Mengesahkan…';
+
+    Auth.login(username, password)
+      .then(function (user) {
+        // Success — close modal, call back
+        close();
+        Api.toast('Selamat datang, ' + (user.fullname || user.username), { type: 'success' });
+        if (typeof onSuccess === 'function') onSuccess(user);
+      })
+      .catch(function (err) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Log masuk';
+
+        if (err.code === 'RATE_LIMIT') {
+          showError(err.message);
+          submitBtn.disabled = true;
+          // Re-enable after a delay
+          setTimeout(function () {
+            submitBtn.disabled = false;
+          }, 30000);
+        } else if (err.code === 'BAD_INPUT' || err.code === 'INVALID_CREDS') {
+          showError(err.message);
+          passwordEl.value = '';
+          passwordEl.focus();
+        } else {
+          showError(err.message || 'Ralat sistem');
+        }
+      });
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     ERROR DISPLAY
+     ────────────────────────────────────────────────────────────── */
+  function showError(message) {
+    var el = document.getElementById('login-error');
+    if (!el) return;
+    el.textContent = message;
+    el.style.display = 'block';
+  }
+
+  function clearError() {
+    var el = document.getElementById('login-error');
+    if (!el) return;
+    el.textContent = '';
+    el.style.display = 'none';
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     CLOSE  ·  Animated dismiss
+     ────────────────────────────────────────────────────────────── */
+  function close() {
+    if (!currentEl) return;
+    currentEl.classList.add('closing');
+    setTimeout(function () {
+      if (currentEl && currentEl.parentNode) {
+        currentEl.parentNode.removeChild(currentEl);
+      }
+      currentEl = null;
+    }, 160);
+  }
+
+
+  /* ──────────────────────────────────────────────────────────────
+     Public surface
+     ────────────────────────────────────────────────────────────── */
+  window.ModalLogin = { open: open, close: close };
+
+})(window);
+</script>
